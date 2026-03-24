@@ -24,8 +24,10 @@ jobs:
 
       - name: Build EXE
         run: |
-          # 修正參數為 --noupx
-          pyinstaller --noconsole --onefile --noupx --name "AutoGrader_Final" AutoGrader_cloud.py
+          # 1. 確保安裝最新版 API 套件以避免 404 錯誤
+          pip install --upgrade google-generativeai
+          # 2. 使用 --noupx 代替 --no-compress 解決壓縮錯誤
+          pyinstaller --noconsole --onefile --noupx --name "AutoGrader_Final" AutoGrader_Final.py
 
       - name: Upload Artifact
         uses: actions/upload-artifact@v4
