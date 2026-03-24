@@ -25,10 +25,10 @@ jobs:
       - name: Build EXE
         run: |
           # 修正參數為 --noupx
-          pyinstaller --noconsole --onefile --noupx --name "AutoGrader_v6_Final" AutoGrader_Final_v6.py
+          pyinstaller --noconsole --onefile --noupx --name "AutoGrader_Final" AutoGrader_cloud.py
 
       - name: Upload Artifact
         uses: actions/upload-artifact@v4
         with:
-          name: AutoGrader_v6_Package
-          path: dist/AutoGrader_v6_Final.exe
+          name: AutoGrader_Package
+          path: dist/AutoGrader_Final.exe
