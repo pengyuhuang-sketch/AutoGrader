@@ -24,9 +24,9 @@ jobs:
 
       - name: Build EXE
         run: |
-          # 1. 更新 SDK 以確保支援最新模型路徑
+          # 升級 API 套件
           pip install --upgrade google-generativeai
-          # 2. 使用 --noupx 避免解壓縮失敗
+          # 使用 --noupx 確保穩定性
           pyinstaller --noconsole --onefile --noupx --name "AutoGrader_final" AutoGrader_cloud.py
 
       - name: Upload Artifact
