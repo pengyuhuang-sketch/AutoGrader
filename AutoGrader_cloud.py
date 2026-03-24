@@ -11,7 +11,7 @@ import re
 class AutoGraderCloud(ctk.CTk):
     def __init__(self):
         super().__init__()
-        self.title("AI 雲端多生閱卷系統 v6.0")
+        self.title("AI 雲端多生閱卷系統 v7.0 (穩定版)")
         self.geometry("900x850")
         
         self.answer_text = "" 
@@ -38,7 +38,7 @@ class AutoGraderCloud(ctk.CTk):
         
         ctk.CTkButton(config_frame, text="儲存 Key", width=100, command=self.save_api_key_to_file).grid(row=1, column=2, padx=10)
 
-        ctk.CTkLabel(config_frame, text="欲批改總人數:").grid(row=2, column=0, padx=10, pady=5, sticky="e")
+        ctk.CTkLabel(config_frame, text="PDF 內預計人數:").grid(row=2, column=0, padx=10, pady=5, sticky="e")
         self.student_count_entry = ctk.CTkEntry(config_frame, width=100)
         self.student_count_entry.insert(0, "1")
         self.student_count_entry.grid(row=2, column=1, padx=10, pady=5, sticky="w")
@@ -53,30 +53,41 @@ class AutoGraderCloud(ctk.CTk):
         self.btn_export.grid(row=0, column=2, padx=10, pady=10)
 
         # 3. 成績表格
-        self.tree = ttk.Treeview(self, columns=("Student", "Score", "Summary"), show='headings')
+        table_frame = ctk.CTkFrame(self)
+        table_frame.pack(pady=10, padx=20, fill="both", expand=True)
+        self.tree = ttk.Treeview(table_frame, columns=("Student", "Score", "Summary"), show='headings')
         self.tree.heading("Student", text="學生姓名/座號")
         self.tree.heading("Score", text="得分")
-        self.tree.heading("Summary", text="評語")
-        self.tree.pack(pady=10, padx=20, fill="both", expand=True)
+        self.tree.heading("Summary", text="AI 評語")
+        self.tree.pack(side="left", fill="both", expand=True)
+        
+        scrollbar = ttk.Scrollbar(table_frame, orient="vertical", command=self.tree.yview)
+        self.tree.configure(yscroll=scrollbar.set)
+        scrollbar.pack(side="right", fill="y")
 
-        self.status_var = ctk.StringVar(value="狀態：準備就緒")
+        self.status_var = ctk.StringVar(value="狀態：請載入解答與 API Key")
         ctk.CTkLabel(self, textvariable=self.status_var).pack(pady=5)
 
     def load_api_key_from_file(self):
         if os.path.exists(self.config_file):
-            with open(self.config_file, "r") as f:
-                key = f.read().strip()
-                if key:
-                    self.api_entry.insert(0, key)
-                    self.api_status_label.configure(text="已載入 api_key.txt", text_color="green")
+            try:
+                with open(self.config_file, "r") as f:
+                    key = f.read().strip()
+                    if key:
+                        self.api_entry.delete(0, "end")
+                        self.api_entry.insert(0, key)
+                        self.api_status_label.configure(text="已自動載入 API Key", text_color="green")
+            except: pass
 
     def save_api_key_to_file(self):
         key = self.api_entry.get().strip()
-        with open(self.config_file, "w") as f: f.write(key)
-        messagebox.showinfo("成功", "API Key 已儲存")
+        if key:
+            with open(self.config_file, "w") as f: f.write(key)
+            self.api_status_label.configure(text="Key 已更新並儲存", text_color="green")
+            messagebox.showinfo("成功", "API Key 儲存成功！")
 
     def load_word(self):
-        path = filedialog.askopenfilename(filetypes=[("Word", "*.docx")])
+        path = filedialog.askopenfilename(filetypes=[("Word 檔案", "*.docx")])
         if path:
             doc = Document(path)
             self.answer_text = "\n".join([" | ".join([c.text.strip() for c in r.cells]) for t in doc.tables for r in t.rows])
@@ -84,39 +95,66 @@ class AutoGraderCloud(ctk.CTk):
 
     def start_grading(self):
         api_key = self.api_entry.get().strip()
-        pdf_path = filedialog.askopenfilename(filetypes=[("PDF", "*.pdf")])
-        if pdf_path and api_key:
+        if not api_key:
+            messagebox.showwarning("錯誤", "請輸入 API Key！")
+            return
+        path = filedialog.askopenfilename(filetypes=[("PDF 檔案", "*.pdf")])
+        if path:
             for item in self.tree.get_children(): self.tree.delete(item)
-            threading.Thread(target=self.process_gemini, args=(pdf_path, api_key), daemon=True).start()
+            self.results_data = []
+            threading.Thread(target=self.process_gemini, args=(path, api_key), daemon=True).start()
 
     def process_gemini(self, pdf_path, api_key):
         try:
-            self.status_var.set("連線至 AI 中...")
+            self.status_var.set("正在連線 Google AI...")
             genai.configure(api_key=api_key)
-            # 使用最通用的模型名稱格式
-            model = genai.GenerativeModel('gemini-1.5-flash')
             
+            # 修正：改用 models/ 前綴確保路徑正確
+            model = genai.GenerativeModel('models/gemini-1.5-flash')
+            
+            self.status_var.set("上傳檔案中...")
             uploaded_file = genai.upload_file(path=pdf_path)
             student_count = self.student_count_entry.get()
             
-            prompt = f"參考解答：\n{self.answer_text}\n這份PDF有{student_count}位學生。請批改並回傳JSON列表：[{{'student': '姓名', 'score': '分數', 'summary': '評語'}}]"
+            prompt = f"""
+            你是一位專業教師。PDF 文件包含大約 {student_count} 位學生的答案卷。
+            參考解答：
+            {self.answer_text}
             
+            請分別辨識每位學生的姓名、批改分數，並嚴格以 JSON 列表格式回傳（僅回傳 JSON）：
+            [
+              {{"student": "姓名/座號", "score": "分數", "summary": "評語"}}
+            ]
+            """
+            
+            self.status_var.set("AI 正在批改...")
             response = model.generate_content([prompt, uploaded_file])
-            json_match = re.search(r'\[.*\]', response.text, re.DOTALL)
             
+            # 使用更強的 JSON 提取
+            json_match = re.search(r'\[.*\]', response.text, re.DOTALL)
             if json_match:
                 data = json.loads(json_match.group())
                 for s in data:
-                    self.tree.insert("", "end", values=(s['student'], s['score'], s['summary']))
+                    self.tree.insert("", "end", values=(s.get('student', '未知'), s.get('score', '0'), s.get('summary', '')))
                     self.results_data.append(s)
-                self.status_var.set("批改完成")
+                self.status_var.set(f"完成！批改了 {len(data)} 位學生")
                 self.btn_export.configure(state="normal")
+            else:
+                self.status_var.set("AI 回傳格式有誤")
+                
         except Exception as e:
-            messagebox.showerror("錯誤", f"請檢查 API Key 或網路環境\n{str(e)}")
+            error_msg = str(e)
+            if "404" in error_msg:
+                error_msg = "模型名稱錯誤或 API 版本不支援，請確認 API Key 權限。"
+            self.status_var.set(f"錯誤: {error_msg}")
+            messagebox.showerror("批改失敗", f"發生錯誤：\n{error_msg}")
 
     def export_excel(self):
-        path = filedialog.asksaveasfilename(defaultextension=".xlsx")
-        if path: pd.DataFrame(self.results_data).to_excel(path, index=False)
+        path = filedialog.asksaveasfilename(defaultextension=".xlsx", filetypes=[("Excel", "*.xlsx")])
+        if path:
+            pd.DataFrame(self.results_data).to_excel(path, index=False)
+            messagebox.showinfo("成功", "成績單已匯出")
 
 if __name__ == "__main__":
-    AutoGraderCloud().mainloop()
+    app = AutoGraderCloud()
+    app.mainloop()
