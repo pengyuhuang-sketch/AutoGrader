@@ -1,10 +1,13 @@
-name: Build Cloud AutoGrader v2
+name: Build Final AutoGrader
 
 on: [push]
 
 jobs:
   build:
     runs-on: windows-latest
+    env:
+      FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+
     steps:
       - name: Checkout Code
         uses: actions/checkout@v4
@@ -17,15 +20,15 @@ jobs:
       - name: Install Dependencies
         run: |
           python -m pip install --upgrade pip
-          # 加入 pandas 與 openpyxl 以支援 Excel 匯出
           pip install customtkinter python-docx google-generativeai pandas openpyxl pyinstaller Pillow
 
       - name: Build EXE
         run: |
-          pyinstaller --noconsole --onefile --name "AutoGrader_Cloud" AutoGrader_Cloud.py
+          # 使用 --no-compress 解決 PIL 解壓失敗問題
+          pyinstaller --noconsole --onefile --no-compress --name "AutoGrader_Final_v5" AutoGrader_Final_Cloud.py
 
-      - name: Upload EXE
+      - name: Upload Artifact
         uses: actions/upload-artifact@v4
         with:
-          name: AutoGrader_Final_Version
-          path: dist/AutoGrader_Cloud.exe
+          name: Release_EXE
+          path: dist/AutoGrader_Final_v5.exe
