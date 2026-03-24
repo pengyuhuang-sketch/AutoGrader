@@ -24,8 +24,10 @@ jobs:
 
       - name: Build EXE
         run: |
-          # 使用 --no-compress 解決 PIL 解壓失敗問題
-          pyinstaller --noconsole --onefile --no-compress --name "AutoGrader_Final_v5" AutoGrader_Final_Cloud.py
+          # 1. 移除不支援的 --no-compress
+          # 2. 加入 --noupx 確保不進行額外壓縮，減少解壓失敗風險
+          # 3. 確保檔名與你上傳的 Python 檔案一致
+          pyinstaller --noconsole --onefile --noupx --name "AutoGrader_Final_v6" AutoGrader_Final_v6.py
 
       - name: Upload Artifact
         uses: actions/upload-artifact@v4
