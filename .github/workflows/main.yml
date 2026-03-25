@@ -1,4 +1,4 @@
-name: Build Final AutoGrader v6
+name: Build Final AutoGrader v7.1
 
 on: [push]
 
@@ -20,17 +20,22 @@ jobs:
       - name: Install Dependencies
         run: |
           python -m pip install --upgrade pip
+          # 確保所有必要的庫都已安裝
           pip install customtkinter python-docx google-generativeai pandas openpyxl pyinstaller Pillow
 
       - name: Build EXE
         run: |
-          # 升級 API 套件
-          pip install --upgrade google-generativeai
-          # 使用 --noupx 確保穩定性
-          pyinstaller --noconsole --onefile --noupx --name "AutoGrader_final" AutoGrader_cloud.py
+          # 關鍵修正：加入 --collect-all 確保 Gemini API 和 UI 資源被正確抓取
+          # 注意：將 --onefile 改回建議的穩定打包模式（如果你堅持要 onefile 也可以，但啟動會較慢）
+          pyinstaller --noconsole --onefile --noupx ^
+          --collect-all google.generativeai ^
+          --collect-all customtkinter ^
+          --collect-all docx ^
+          --name "AutoGrader_v7.1_Final" AutoGrader_cloud.py
 
       - name: Upload Artifact
         uses: actions/upload-artifact@v4
         with:
-          name: AutoGrader_Package
-          path: dist/AutoGrader_Final.exe
+          name: AutoGrader_Final_Download
+          # 注意這裡的路徑要跟上面 --name 設定的對齊 (windows 會自動加 .exe)
+          path: dist/AutoGrader_v7.1_Final.exe
