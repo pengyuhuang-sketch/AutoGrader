@@ -31,11 +31,11 @@ jobs:
           --collect-all google.generativeai ^
           --collect-all customtkinter ^
           --collect-all docx ^
-          --name "AutoGrader_v7.1_Final" AutoGrader_cloud.py
+          --name "AutoGrader_Final" AutoGrader_cloud.py
 
       - name: Upload Artifact
         uses: actions/upload-artifact@v4
         with:
           name: AutoGrader_Final_Download
           # 注意這裡的路徑要跟上面 --name 設定的對齊 (windows 會自動加 .exe)
-          path: dist/AutoGrader_v7.1_Final.exe
+          path: dist/AutoGrader_Final.exe
