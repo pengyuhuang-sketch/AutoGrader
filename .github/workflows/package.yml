@@ -1,13 +1,13 @@
 name: Build AutoGrader EXE
-on: [push, workflow_dispatch] # 每次上傳或手動啟動時執行
+on: [push, workflow_dispatch]
 
 jobs:
   build:
     runs-on: windows-latest
     steps:
-      - uses: actions/checkout@v3
+      - uses: actions/checkout@v4 # 升級到 v4
       - name: Set up Python
-        uses: actions/setup-python@v4
+        uses: actions/setup-python@v5 # 升級到 v5
         with:
           python-version: '3.10'
       - name: Install dependencies
@@ -17,7 +17,7 @@ jobs:
         run: |
           pyinstaller --noconsole --onefile --collect-all fitz AutoGrader_cloud.py
       - name: Upload Artifact
-        uses: actions/upload-artifact@v3
+        uses: actions/upload-artifact@v4 # 關鍵修正：必須使用 v4
         with:
           name: AutoGrader-Finished-EXE
           path: dist/AutoGrader_cloud.exe
