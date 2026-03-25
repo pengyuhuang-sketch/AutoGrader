@@ -1,6 +1,7 @@
 import customtkinter as ctk
 from tkinter import filedialog, messagebox, ttk
 from docx import Document
+import fitz  # PyMuPDF: 用於讀取 PDF 文字
 import google.generativeai as genai
 import pandas as pd
 import os
@@ -12,7 +13,7 @@ import io
 class AutoGraderCloud(ctk.CTk):
     def __init__(self):
         super().__init__()
-        self.title("AI 雲端閱卷系統 v7.5 ")
+        self.title("AI 雲端閱卷系統 v7.6 (Word/PDF 雙解答支援)")
         self.geometry("1100x850")
         
         self.answer_text = "" 
@@ -39,8 +40,9 @@ class AutoGraderCloud(ctk.CTk):
         # 2. 按鈕區
         btn_frame = ctk.CTkFrame(self)
         btn_frame.pack(pady=10, padx=20, fill="x")
-        ctk.CTkButton(btn_frame, text="1. 載入解答 (Word)", command=self.load_word, width=180).grid(row=0, column=0, padx=15, pady=10)
-        self.btn_start = ctk.CTkButton(btn_frame, text="2. 開始批改 (PDF)", command=self.start_grading, fg_color="#2ecc71", width=180)
+        # 修改：調整為支援兩種格式
+        ctk.CTkButton(btn_frame, text="1. 載入解答 (Word/PDF)", command=self.load_answer, width=200).grid(row=0, column=0, padx=15, pady=10)
+        self.btn_start = ctk.CTkButton(btn_frame, text="2. 開始批改 (PDF考卷)", command=self.start_grading, fg_color="#2ecc71", width=180)
         self.btn_start.grid(row=0, column=1, padx=15, pady=10)
         self.btn_export = ctk.CTkButton(btn_frame, text="3. 匯出轉置 Excel", command=self.export_excel, state="disabled", width=180)
         self.btn_export.grid(row=0, column=2, padx=15, pady=10)
@@ -64,57 +66,86 @@ class AutoGraderCloud(ctk.CTk):
         with open(self.config_file, "w") as f: f.write(self.api_entry.get())
         messagebox.showinfo("成功", "Key 已儲存")
 
-    def load_word(self):
-        path = filedialog.askopenfilename(filetypes=[("Word", "*.docx")])
-        if path:
-            with open(path, 'rb') as f:
-                doc = Document(io.BytesIO(f.read()))
-                self.answer_text = "\n".join([" | ".join([c.text.strip() for c in r.cells]) for t in doc.tables for r in t.rows])
-            self.status_var.set("解答載入成功")
+    # --- 修改後的解答載入函數 ---
+    def load_answer(self):
+        path = filedialog.askopenfilename(filetypes=[("解答檔案", "*.docx *.pdf")])
+        if not path:
+            return
+            
+        try:
+            file_ext = os.path.splitext(path)[1].lower()
+            
+            if file_ext == ".docx":
+                with open(path, 'rb') as f:
+                    doc = Document(io.BytesIO(f.read()))
+                    # 讀取表格文字（舊邏輯）
+                    self.answer_text = "\n".join([" | ".join([c.text.strip() for c in r.cells]) for t in doc.tables for r in t.rows])
+                self.status_var.set("Word 解答載入成功")
+                
+            elif file_ext == ".pdf":
+                doc = fitz.open(path)
+                full_text = ""
+                for page in doc:
+                    full_text += page.get_text()
+                self.answer_text = full_text
+                doc.close()
+                self.status_var.set("PDF 解答載入成功")
+                
+            if not self.answer_text.strip():
+                messagebox.showwarning("警告", "無法從檔案中提取到文字內容，請確認檔案是否為掃描圖檔或空白。")
+                
+        except Exception as e:
+            messagebox.showerror("錯誤", f"解答檔案讀取失敗: {str(e)}")
 
     def start_grading(self):
         api_key = self.api_entry.get().strip()
         pdf_path = filedialog.askopenfilename(filetypes=[("PDF", "*.pdf")])
         if pdf_path and api_key:
+            if not self.answer_text:
+                messagebox.showwarning("提示", "請先載入正確解答 (Word 或 PDF)")
+                return
             for item in self.tree.get_children(): self.tree.delete(item)
             self.results_data = []
             threading.Thread(target=self.run_grading, args=(pdf_path, api_key), daemon=True).start()
 
     def run_grading(self, pdf_path, api_key):
         try:
-            self.status_var.set("AI 偵測模型與分析中...")
+            self.status_var.set("AI 辨識中 (採用精準視覺演算法)...")
             genai.configure(api_key=api_key)
             models = [m.name for m in genai.list_models() if 'generateContent' in m.supported_generation_methods]
-            target_model = next((m for m in models if "1.5-flash" in m), models[0])
+            # 優先使用 1.5-pro 如果有的話，辨識手寫更準，否則用 flash
+            target_model = next((m for m in models if "1.5-pro" in m), next((m for m in models if "1.5-flash" in m), models[0]))
             
             model = genai.GenerativeModel(model_name=target_model, generation_config={"response_mime_type": "application/json"})
             uploaded_file = genai.upload_file(path=pdf_path)
             while uploaded_file.state.name == "PROCESSING": time.sleep(2); uploaded_file = genai.get_file(uploaded_file.name)
             
+            # 使用先前針對 3 號學生優化過的精準 Prompt
             prompt = f"""
-            你是一位擁有強大視覺辨識能力的閱卷老師，PDF 中包含學生的手寫選擇題答案。。
+            你是一位極其嚴謹、專門處理模糊手寫稿的閱卷專家。
+            目前影像中是學生的手寫選擇題答案（A, B, C, D）。
             參考解答：{self.answer_text}
-            【視覺辨識法則 - 嚴格執行】
-            1. 字母 A：觀察是否有尖頂或頂部交叉。若筆劃有向上會合點，且下方有開口，優先判定為 A。
-            2. 字母 B：觀察是否有「上下兩個」封閉或半封閉圓弧。即使中間收得很窄，只要有兩層結構即為 B。
-            3. 字母 C：觀察是否有明顯的「右側開口」。
-            4. 字母 D：觀察是否為「左側直線」搭配「右側大圓弧」。
-            【排除干擾】
-            - 忽略黑色印刷的格線與題號（1., 2., 3...）。
-            - 只辨識藍色或黑色的「學生手寫筆跡」。
-            - 若字跡像 C 但解答是 B，請再次確認筆劃中間是否有極細微的橫切連線（代表 B）。
-            任務：
+
+            【字形結構判斷準則】
+            1. 判定為 'A'：看到兩條斜線在頂部交會，中間有橫向筆跡。
+            2. 判定為 'B'：有垂直左側線與上下兩個圓弧。即使中間橫線不明顯，只要外型呈雙層堆疊即判定為 B。
+            3. 判定為 'C'：有明顯右側開口。
+            4. 判定為 'D'：左側一直線，右側一個大圓弧。
+
+            【環境排除干擾】
+            - 忽略印刷格線與格線左上角的題號。
+            - 以學生手寫筆跡（藍色或深灰色）為準。
+
+            任務目標：
             1. 辨識班級、座號、姓名。
-            2. 逐題比對。
-            3. 考卷中是學生的手寫英文字母 (A, B, C, D)。
-            4. 比對結果請用 '○' (正確) 或 '╳' (錯誤) 表示。
-            5. 嚴格回傳此 JSON 格式：
+            2. 比對正確答案。正確請用 '○'，錯誤請用 '╳'。
+            3. 嚴格回傳此 JSON 格式：
             [
               {{
                 "class": "班級", "no": "座號", "name": "姓名",
                 "questions": [
                   {{"q_idx": 1, "s_ans": "A", "c_ans": "A", "res": "○"}},
-                  {{"q_idx": 2, "s_ans": "B", "c_ans": "C", "res": "╳"}}
+                  ...
                 ]
               }}
             ]
@@ -124,9 +155,8 @@ class AutoGraderCloud(ctk.CTk):
             self.results_data = json.loads(response.text)
 
             for s in self.results_data:
-                # 計算正確題數
-                correct_count = sum(1 for q in s.get('questions', []) if q.get('res') == 'O')
-                s['correct_sum'] = correct_count # 暫存用於匯出
+                correct_count = sum(1 for q in s.get('questions', []) if q.get('res') == '○')
+                s['correct_sum'] = correct_count
                 self.tree.insert("", "end", values=(s.get('class'), s.get('no'), s.get('name'), correct_count))
                 
             self.status_var.set("批改完成！")
@@ -140,50 +170,30 @@ class AutoGraderCloud(ctk.CTk):
         path = filedialog.asksaveasfilename(defaultextension=".xlsx", filetypes=[("Excel", "*.xlsx")])
         if path:
             try:
-                # --- 轉置邏輯開始 ---
-                # 我們建立一個字典，Key 是欄位名稱（如：班級、座號、第1題答案...）
-                # Value 是每一位學生的資料清單
-                export_dict = {
-                    "項目": ["班級", "座號", "姓名", "正確總題數"]
-                }
-                
-                # 先抓出最大的題目數量來決定要有多少列
+                export_dict = {"項目": ["班級", "座號", "姓名", "正確總題數"]}
                 max_q = 0
                 for s in self.results_data:
                     max_q = max(max_q, len(s.get("questions", [])))
                 
-                # 加入題目相關的「項目」標籤
                 for i in range(1, max_q + 1):
                     export_dict["項目"].append(f"第{i}題_學生答案")
                     export_dict["項目"].append(f"第{i}題_正確答案")
                     export_dict["項目"].append(f"第{i}題_比對結果")
 
-                # 填充每位學生的資料到新欄位
                 for s in self.results_data:
-                    # 欄位名稱用 "姓名(座號)" 以防重名
                     col_name = f"{s.get('name')}({s.get('no')})"
-                    student_values = [
-                        s.get("class"),
-                        s.get("no"),
-                        s.get("name"),
-                        s.get("correct_sum")
-                    ]
-                    
-                    # 逐題填入
+                    student_values = [s.get("class"), s.get("no"), s.get("name"), s.get("correct_sum")]
                     for q in s.get("questions", []):
                         student_values.append(q.get("s_ans"))
                         student_values.append(q.get("c_ans"))
                         student_values.append(q.get("res"))
-                    
-                    # 若題目數不足（有的學生沒寫完），補空白
                     while len(student_values) < len(export_dict["項目"]):
                         student_values.append("")
-                        
                     export_dict[col_name] = student_values
 
                 df = pd.DataFrame(export_dict)
                 df.to_excel(path, index=False)
-                messagebox.showinfo("成功", f"轉置報告匯出成功！\n學生現在為橫向排列。")
+                messagebox.showinfo("成功", f"轉置報告匯出成功！")
             except Exception as e:
                 messagebox.showerror("匯出錯誤", str(e))
 
