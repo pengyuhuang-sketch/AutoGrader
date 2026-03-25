@@ -28,7 +28,7 @@ jobs:
           # 關鍵：移除 --onefile，改用 --onedir (資料夾模式)
           # 並額外增加 --collect-all google_auth 以防萬一
           pyinstaller --noconsole --onedir --noupx --collect-all google.generativeai --collect-all customtkinter --collect-all docx --collect-all googleapiclient --name "AutoGrader_v7.1_Final" AutoGrader_cloud.py
-          pyinstaller --noconsole --onedir --noupx --collect-all fitz AutoGrader_cloud.py
+          pyinstaller --noconsole --onefile --collect-all fitz AutoGrader_cloud.py
 
       - name: Upload Artifact
         uses: actions/upload-artifact@v4
