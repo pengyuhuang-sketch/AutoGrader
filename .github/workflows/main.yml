@@ -25,12 +25,13 @@ jobs:
 
       - name: Build EXE
         run: |
-          # 將指令寫成單行，避免 PowerShell 換行符號 (^) 造成的編譯錯誤
-          pyinstaller --noconsole --onefile --noupx --collect-all google.generativeai --collect-all customtkinter --collect-all docx --name "AutoGrader_v7.1_Final" AutoGrader_cloud.py
+          # 關鍵：移除 --onefile，改用 --onedir (資料夾模式)
+          # 並額外增加 --collect-all google_auth 以防萬一
+          pyinstaller --noconsole --onedir --noupx --collect-all google.generativeai --collect-all customtkinter --collect-all docx --collect-all googleapiclient --name "AutoGrader_v7.1_Final" AutoGrader_cloud.py
 
       - name: Upload Artifact
         uses: actions/upload-artifact@v4
         with:
-          name: AutoGrader_Final_Download
-          # 確保路徑與上面的 --name 一致，並加上 .exe
-          path: dist/AutoGrader_v7.1_Final.exe
+          name: AutoGrader_Final_Package
+          # 注意：這裡路徑改為整個資料夾目錄
+          path: dist/AutoGrader_v7.1_Final/
