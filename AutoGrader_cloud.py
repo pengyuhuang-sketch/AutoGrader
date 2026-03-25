@@ -12,11 +12,11 @@ import io
 class AutoGraderCloud(ctk.CTk):
     def __init__(self):
         super().__init__()
-        self.title("AI 雲端多生閱卷系統 v7.4 (結構化數據版)")
+        self.title("AI 雲端閱卷系統 v7.5 ")
         self.geometry("1100x850")
         
         self.answer_text = "" 
-        self.results_data = [] # 存儲原始 JSON 數據
+        self.results_data = [] 
         self.config_file = "api_key.txt"
         
         self.setup_ui()
@@ -26,9 +26,9 @@ class AutoGraderCloud(ctk.CTk):
         ctk.set_appearance_mode("System")
         ctk.set_default_color_theme("blue")
         
-        ctk.CTkLabel(self, text="AI 雲端自動閱卷系統 (Structured Data)", font=("Microsoft JhengHei", 24, "bold")).pack(pady=15)
+        ctk.CTkLabel(self, text="AI 閱卷系統 - 診斷報告模式", font=("Microsoft JhengHei", 24, "bold")).pack(pady=15)
 
-        # 1. API 配置區
+        # 1. API 配置
         config_frame = ctk.CTkFrame(self)
         config_frame.pack(pady=10, padx=20, fill="x")
         ctk.CTkLabel(config_frame, text="API Key:").grid(row=0, column=0, padx=10, pady=5)
@@ -42,15 +42,15 @@ class AutoGraderCloud(ctk.CTk):
         ctk.CTkButton(btn_frame, text="1. 載入解答 (Word)", command=self.load_word, width=180).grid(row=0, column=0, padx=15, pady=10)
         self.btn_start = ctk.CTkButton(btn_frame, text="2. 開始批改 (PDF)", command=self.start_grading, fg_color="#2ecc71", width=180)
         self.btn_start.grid(row=0, column=1, padx=15, pady=10)
-        self.btn_export = ctk.CTkButton(btn_frame, text="3. 匯出 Excel (多欄位)", command=self.export_excel, state="disabled", width=180)
+        self.btn_export = ctk.CTkButton(btn_frame, text="3. 匯出轉置 Excel", command=self.export_excel, state="disabled", width=180)
         self.btn_export.grid(row=0, column=2, padx=15, pady=10)
 
-        # 3. 表格區域 (UI 僅顯示總覽)
+        # 3. 畫面顯示 (UI 顯示簡略清單)
         table_frame = ctk.CTkFrame(self)
         table_frame.pack(pady=10, padx=20, fill="both", expand=True)
-        self.tree = ttk.Treeview(table_frame, columns=("Class", "No", "Name", "Score", "Status"), show='headings')
-        self.tree.heading("Class", text="班級"); self.tree.heading("No", text="座號"); 
-        self.tree.heading("Name", text="姓名"); self.tree.heading("Score", text="總分"); self.tree.heading("Status", text="狀態")
+        self.tree = ttk.Treeview(table_frame, columns=("Class", "No", "Name", "CorrectCount"), show='headings')
+        self.tree.heading("Class", text="班級"); self.tree.heading("No", text="座號")
+        self.tree.heading("Name", text="姓名"); self.tree.heading("CorrectCount", text="正確題數")
         self.tree.pack(side="left", fill="both", expand=True)
         
         self.status_var = ctk.StringVar(value="狀態：準備就緒")
@@ -70,7 +70,7 @@ class AutoGraderCloud(ctk.CTk):
             with open(path, 'rb') as f:
                 doc = Document(io.BytesIO(f.read()))
                 self.answer_text = "\n".join([" | ".join([c.text.strip() for c in r.cells]) for t in doc.tables for r in t.rows])
-            self.status_var.set("解答載入完成")
+            self.status_var.set("解答載入成功")
 
     def start_grading(self):
         api_key = self.api_entry.get().strip()
@@ -82,7 +82,7 @@ class AutoGraderCloud(ctk.CTk):
 
     def run_grading(self, pdf_path, api_key):
         try:
-            self.status_var.set("AI 模型連線中...")
+            self.status_var.set("AI 偵測模型與分析中...")
             genai.configure(api_key=api_key)
             models = [m.name for m in genai.list_models() if 'generateContent' in m.supported_generation_methods]
             target_model = next((m for m in models if "1.5-flash" in m), models[0])
@@ -92,18 +92,19 @@ class AutoGraderCloud(ctk.CTk):
             while uploaded_file.state.name == "PROCESSING": time.sleep(2); uploaded_file = genai.get_file(uploaded_file.name)
             
             prompt = f"""
-            你是一位自動閱卷機器人。
+            你是一位閱卷助手。
             參考解答：{self.answer_text}
             任務：
             1. 辨識班級、座號、姓名。
             2. 逐題比對。
-            3. 嚴格回傳此 JSON 格式：
+            3. 比對結果請用 'O' (正確) 或 'X' (錯誤) 表示。
+            4. 嚴格回傳此 JSON 格式：
             [
               {{
-                "class": "班級", "no": "座號", "name": "姓名", "total_score": 100,
+                "class": "班級", "no": "座號", "name": "姓名",
                 "questions": [
-                  {{"q_idx": 1, "student_ans": "A", "correct_ans": "A", "result": "✅"}},
-                  {{"q_idx": 2, "student_ans": "B", "correct_ans": "C", "result": "❌"}}
+                  {{"q_idx": 1, "s_ans": "A", "c_ans": "A", "res": "O"}},
+                  {{"q_idx": 2, "s_ans": "B", "c_ans": "C", "res": "X"}}
                 ]
               }}
             ]
@@ -113,37 +114,68 @@ class AutoGraderCloud(ctk.CTk):
             self.results_data = json.loads(response.text)
 
             for s in self.results_data:
-                self.tree.insert("", "end", values=(s.get('class'), s.get('no'), s.get('name'), s.get('total_score'), "完成"))
+                # 計算正確題數
+                correct_count = sum(1 for q in s.get('questions', []) if q.get('res') == 'O')
+                s['correct_sum'] = correct_count # 暫存用於匯出
+                self.tree.insert("", "end", values=(s.get('class'), s.get('no'), s.get('name'), correct_count))
                 
             self.status_var.set("批改完成！")
             self.btn_export.configure(state="normal")
         except Exception as e:
-            messagebox.showerror("錯誤", str(e))
+            messagebox.showerror("錯誤", f"批改過程出錯: {str(e)}")
         finally:
             self.btn_start.configure(state="normal")
 
     def export_excel(self):
         path = filedialog.asksaveasfilename(defaultextension=".xlsx", filetypes=[("Excel", "*.xlsx")])
         if path:
-            final_rows = []
-            for student in self.results_data:
-                # 基礎資料
-                row = {
-                    "班級": student.get("class"),
-                    "座號": student.get("no"),
-                    "姓名": student.get("name"),
-                    "總分": student.get("total_score")
+            try:
+                # --- 轉置邏輯開始 ---
+                # 我們建立一個字典，Key 是欄位名稱（如：班級、座號、第1題答案...）
+                # Value 是每一位學生的資料清單
+                export_dict = {
+                    "項目": ["班級", "座號", "姓名", "正確總題數"]
                 }
-                # 展開每一題
-                for q in student.get("questions", []):
-                    idx = q.get("q_idx")
-                    row[f"第{idx}題_學生答案"] = q.get("student_ans")
-                    row[f"第{idx}題_正確答案"] = q.get("correct_ans")
-                    row[f"第{idx}題_結果"] = q.get("result")
-                final_rows.append(row)
-            
-            pd.DataFrame(final_rows).to_excel(path, index=False)
-            messagebox.showinfo("成功", "多欄位 Excel 匯出成功！")
+                
+                # 先抓出最大的題目數量來決定要有多少列
+                max_q = 0
+                for s in self.results_data:
+                    max_q = max(max_q, len(s.get("questions", [])))
+                
+                # 加入題目相關的「項目」標籤
+                for i in range(1, max_q + 1):
+                    export_dict["項目"].append(f"第{i}題_學生答案")
+                    export_dict["項目"].append(f"第{i}題_正確答案")
+                    export_dict["項目"].append(f"第{i}題_比對結果")
+
+                # 填充每位學生的資料到新欄位
+                for s in self.results_data:
+                    # 欄位名稱用 "姓名(座號)" 以防重名
+                    col_name = f"{s.get('name')}({s.get('no')})"
+                    student_values = [
+                        s.get("class"),
+                        s.get("no"),
+                        s.get("name"),
+                        s.get("correct_sum")
+                    ]
+                    
+                    # 逐題填入
+                    for q in s.get("questions", []):
+                        student_values.append(q.get("s_ans"))
+                        student_values.append(q.get("c_ans"))
+                        student_values.append(q.get("res"))
+                    
+                    # 若題目數不足（有的學生沒寫完），補空白
+                    while len(student_values) < len(export_dict["項目"]):
+                        student_values.append("")
+                        
+                    export_dict[col_name] = student_values
+
+                df = pd.DataFrame(export_dict)
+                df.to_excel(path, index=False)
+                messagebox.showinfo("成功", f"轉置報告匯出成功！\n學生現在為橫向排列。")
+            except Exception as e:
+                messagebox.showerror("匯出錯誤", str(e))
 
 if __name__ == "__main__":
     AutoGraderCloud().mainloop()
