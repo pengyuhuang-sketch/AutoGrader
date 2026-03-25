@@ -12,8 +12,8 @@ import io
 class AutoGraderCloud(ctk.CTk):
     def __init__(self):
         super().__init__()
-        self.title("AI 雲端多生閱卷系統 v7.2 (自動調優版)")
-        self.geometry("900x850")
+        self.title("AI 雲端多生閱卷系統 v7.3 (詳盡比對版)")
+        self.geometry("1100x850") # 稍微加寬以容納更多欄位
         
         self.answer_text = "" 
         self.results_data = [] 
@@ -26,7 +26,7 @@ class AutoGraderCloud(ctk.CTk):
         ctk.set_appearance_mode("System")
         ctk.set_default_color_theme("blue")
         
-        ctk.CTkLabel(self, text="AI 雲端自動閱卷系統 (Dynamic AI Mode)", font=("Microsoft JhengHei", 24, "bold")).pack(pady=15)
+        ctk.CTkLabel(self, text="AI 雲端自動閱卷系統 (Detailed Analysis)", font=("Microsoft JhengHei", 24, "bold")).pack(pady=15)
 
         # 1. API 配置區
         config_frame = ctk.CTkFrame(self)
@@ -52,17 +52,24 @@ class AutoGraderCloud(ctk.CTk):
         self.btn_export = ctk.CTkButton(btn_frame, text="3. 匯出 Excel", command=self.export_excel, state="disabled", width=180)
         self.btn_export.grid(row=0, column=2, padx=15, pady=10)
 
-        # 3. 表格區域
+        # 3. 表格區域 - 新增 班級、座號、逐題詳情 欄位
         table_frame = ctk.CTkFrame(self)
         table_frame.pack(pady=10, padx=20, fill="both", expand=True)
         
-        self.tree = ttk.Treeview(table_frame, columns=("Student", "Score", "Summary"), show='headings')
-        self.tree.heading("Student", text="學生姓名/座號")
-        self.tree.heading("Score", text="得分")
-        self.tree.heading("Summary", text="AI 評語")
-        self.tree.column("Student", width=150, anchor="center")
-        self.tree.column("Score", width=100, anchor="center")
-        self.tree.column("Summary", width=400, anchor="w")
+        columns = ("Class", "No", "Name", "Details", "Score")
+        self.tree = ttk.Treeview(table_frame, columns=columns, show='headings')
+        
+        self.tree.heading("Class", text="班級")
+        self.tree.heading("No", text="座號")
+        self.tree.heading("Name", text="姓名")
+        self.tree.heading("Details", text="逐題比對結果 (學生答案 vs 正解)")
+        self.tree.heading("Score", text="總分")
+        
+        self.tree.column("Class", width=70, anchor="center")
+        self.tree.column("No", width=60, anchor="center")
+        self.tree.column("Name", width=100, anchor="center")
+        self.tree.column("Details", width=550, anchor="w")
+        self.tree.column("Score", width=80, anchor="center")
         
         scrollbar = ttk.Scrollbar(table_frame, orient="vertical", command=self.tree.yview)
         self.tree.configure(yscrollcommand=scrollbar.set)
@@ -86,7 +93,6 @@ class AutoGraderCloud(ctk.CTk):
         path = filedialog.askopenfilename(filetypes=[("Word 檔案", "*.docx")])
         if path:
             try:
-                # 強化版讀取：先用 binary 讀取避免檔案鎖定或路徑編碼問題
                 with open(path, 'rb') as f:
                     file_stream = io.BytesIO(f.read())
                     doc = Document(file_stream)
@@ -99,14 +105,14 @@ class AutoGraderCloud(ctk.CTk):
                     self.answer_text = "\n".join(content)
                 self.status_var.set(f"解答載入成功：{os.path.basename(path)}")
             except Exception as e:
-                messagebox.showerror("載入失敗", f"Word 讀取錯誤: {str(e)}\n請確認檔案是否已關閉。")
+                messagebox.showerror("載入失敗", f"Word 讀取錯誤: {str(e)}")
 
     def start_grading(self):
         api_key = self.api_entry.get().strip()
         pdf_path = filedialog.askopenfilename(filetypes=[("PDF 考卷", "*.pdf")])
         if pdf_path and api_key:
             if not self.answer_text:
-                messagebox.showwarning("提示", "請先載入正確解答 Word 檔")
+                messagebox.showwarning("提示", "請先載入解答 Word")
                 return
             for item in self.tree.get_children(): self.tree.delete(item)
             self.results_data = []
@@ -115,51 +121,70 @@ class AutoGraderCloud(ctk.CTk):
 
     def run_grading(self, pdf_path, api_key):
         try:
-            self.status_var.set("正在連線 Google AI 並自動偵測模型...")
+            self.status_var.set("正在動態偵測模型...")
             genai.configure(api_key=api_key)
-            
-            # --- 動態模型偵測 ---
             models = [m.name for m in genai.list_models() if 'generateContent' in m.supported_generation_methods]
             target_model = next((m for m in models if "1.5-flash" in m), models[0] if models else "")
-            
-            if not target_model:
-                raise Exception("找不到可用模型，請檢查 API Key 權限。")
             
             model = genai.GenerativeModel(
                 model_name=target_model,
                 generation_config={"response_mime_type": "application/json"}
             )
             
-            self.status_var.set("檔案處理中...")
+            self.status_var.set("上傳並分析 PDF 中...")
             uploaded_file = genai.upload_file(path=pdf_path)
             while uploaded_file.state.name == "PROCESSING":
                 time.sleep(2)
                 uploaded_file = genai.get_file(uploaded_file.name)
             
+            # 關鍵：更新 Prompt 要求詳盡比對資料
             prompt = f"""
-            你是一位專業教師。PDF 包含約 {self.student_count_entry.get()} 位學生的考卷。
-            解答參考：{self.answer_text}
-            請辨識學生姓名、計算得分並給予評語。
-            嚴格回傳 JSON 格式：[ {{"student": "姓名", "score": 80, "summary": "評語"}} ]
+            你是一位專業教師。PDF 包含約 {self.student_count_entry.get()} 位學生的考卷影像。
+            標準解答：
+            {self.answer_text}
+            
+            任務：
+            1. 辨識每位學生的「班級」、「座號」與「姓名」。
+            2. 針對每一題，列出「學生答案」與「正確答案」的比對結果。
+            3. 計算總分。
+            4. 嚴格回傳 JSON 格式：
+            [
+              {{
+                "class": "班級名稱",
+                "no": "座號",
+                "student": "姓名",
+                "details": "1. A(正解A) ✅; 2. B(正解C) ❌; ...",
+                "score": 總分
+              }}
+            ]
             """
             
-            self.status_var.set(f"使用 {target_model.split('/')[-1]} 批改中...")
             response = model.generate_content([prompt, uploaded_file])
-            
-            # 強化版 JSON 解析
             raw_data = json.loads(response.text)
-            data = raw_data if isinstance(raw_data, list) else next(iter(raw_data.values())) if isinstance(raw_data, dict) else []
+            data = raw_data if isinstance(raw_data, list) else next(iter(raw_data.values()))
 
             for s in data:
-                name, score, summary = s.get('student','未知'), s.get('score',0), s.get('summary','無')
-                self.tree.insert("", "end", values=(name, score, summary))
-                self.results_data.append({"學生": name, "分數": score, "評語": summary})
+                c_name = s.get('class', '未知')
+                no = s.get('no', '未知')
+                name = s.get('student', '未知')
+                details = s.get('details', '無數據')
+                score = s.get('score', 0)
                 
-            self.status_var.set(f"批改完成！(Model: {target_model.split('/')[-1]})")
+                self.tree.insert("", "end", values=(c_name, no, name, details, score))
+                # 儲存到結果清單供匯出
+                self.results_data.append({
+                    "班級": c_name,
+                    "座號": no,
+                    "姓名": name,
+                    "每題比對詳情": details,
+                    "總計分數": score
+                })
+                
+            self.status_var.set("批改完成！")
             self.btn_export.configure(state="normal")
             
         except Exception as e:
-            messagebox.showerror("批改失敗", f"詳細錯誤：{str(e)}")
+            messagebox.showerror("失敗", f"錯誤：{str(e)}")
             self.status_var.set("發生錯誤")
         finally:
             self.btn_start.configure(state="normal")
@@ -167,8 +192,14 @@ class AutoGraderCloud(ctk.CTk):
     def export_excel(self):
         path = filedialog.asksaveasfilename(defaultextension=".xlsx", filetypes=[("Excel", "*.xlsx")])
         if path:
-            pd.DataFrame(self.results_data).to_excel(path, index=False)
-            messagebox.showinfo("成功", "報告已儲存")
+            try:
+                df = pd.DataFrame(self.results_data)
+                # 調整 Excel 欄位順序
+                df = df[["班級", "座號", "姓名", "每題比對詳情", "總計分數"]]
+                df.to_excel(path, index=False)
+                messagebox.showinfo("成功", f"檔案已匯出至：{path}")
+            except Exception as e:
+                messagebox.showerror("匯出錯誤", str(e))
 
 if __name__ == "__main__":
     AutoGraderCloud().mainloop()
