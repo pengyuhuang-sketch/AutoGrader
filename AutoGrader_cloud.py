@@ -13,7 +13,7 @@ import io
 class AutoGraderCloud(ctk.CTk):
     def __init__(self):
         super().__init__()
-        self.title("AI 閱卷系統 v8.8 - 座標對位與空白鎖定版")
+        self.title("AI 雲端閱卷系統 v8.9 - 自動模型抓取版")
         self.geometry("1100x850")
         
         self.answer_text = "" 
@@ -27,7 +27,7 @@ class AutoGraderCloud(ctk.CTk):
         ctk.set_appearance_mode("System")
         ctk.set_default_color_theme("blue")
         
-        ctk.CTkLabel(self, text="AI 閱卷系統 - 終極穩定辨識模式", font=("Microsoft JhengHei", 24, "bold")).pack(pady=15)
+        ctk.CTkLabel(self, text="AI 閱卷系統 - 自動模型與座標校正模式", font=("Microsoft JhengHei", 24, "bold")).pack(pady=15)
 
         # 1. API 配置
         config_frame = ctk.CTkFrame(self)
@@ -37,7 +37,7 @@ class AutoGraderCloud(ctk.CTk):
         self.api_entry.grid(row=0, column=1, padx=10, pady=5)
         ctk.CTkButton(config_frame, text="儲存 Key", width=100, command=self.save_api_key).grid(row=0, column=2, padx=10)
 
-        # 2. 按鈕區
+        # 2. 功能按鈕
         btn_frame = ctk.CTkFrame(self)
         btn_frame.pack(pady=10, padx=20, fill="x")
         ctk.CTkButton(btn_frame, text="1. 載入解答 (Word/PDF)", command=self.load_answer, width=200).grid(row=0, column=0, padx=15, pady=10)
@@ -95,41 +95,59 @@ class AutoGraderCloud(ctk.CTk):
 
     def run_grading(self, pdf_path, api_key):
         try:
-            self.status_var.set("偵測 API 模型...")
+            self.status_var.set("正在搜尋 API 可用模型清單...")
             genai.configure(api_key=api_key)
-            available_models = [m.name for m in genai.list_models() if 'generateContent' in m.supported_generation_methods]
-            target_model = next((m for m in available_models if "gemini-1.5-flash" in m), None) or "models/gemini-1.5-flash"
+            
+            # --- 自動模型抓取邏輯 ---
+            available_models = []
+            for m in genai.list_models():
+                if 'generateContent' in m.supported_generation_methods:
+                    available_models.append(m.name)
+            
+            # 優先級：flash -> pro -> 列表第一個
+            target_model = None
+            for name in available_models:
+                if "gemini-1.5-flash" in name:
+                    target_model = name
+                    break
+            if not target_model:
+                for name in available_models:
+                    if "gemini-1.5-pro" in name:
+                        target_model = name
+                        break
+            if not target_model and available_models:
+                target_model = available_models[0]
+            
+            if not target_model:
+                raise Exception("此 API Key 無可用模型。")
 
             model = genai.GenerativeModel(model_name=target_model, generation_config={"response_mime_type": "application/json"})
             
+            self.status_var.set(f"上傳中 (使用模型: {target_model})...")
             uploaded_file = genai.upload_file(path=pdf_path)
             while uploaded_file.state.name == "PROCESSING": 
                 time.sleep(2)
                 uploaded_file = genai.get_file(uploaded_file.name)
             
-            # --- v8.8 核心修正：空白校正與嚴格座標對位 ---
+            # --- 強化版 Prompt：解決位移、誤判、與空白問題 ---
             prompt = f"""
             你是一位視覺閱卷專家。影像中是學生的手寫答案卷。
             參考解答：{self.answer_text}
 
-            【辨識指令：座標與空白鎖定】
-            1. **嚴格座標對位**：
-               - 每一題的辨識必須以「印刷題號」(如 1., 2., 3.) 為基準點。
-               - 請確認第1題的位置，絕對不可跳過第一題。若第1題無答案，請回傳 ""，不可將第2題的答案往前填補。
-            2. **空白判定基準 (核心修正)**：
-               - **判定為空白 ""**：如果該題號下方的格子內沒有明顯的「深色人為墨跡」，請務必回傳空字串 ""。
-               - **嚴禁腦補**：絕對不可將掃描產生的微小灰塵點、紙張纖維、或印刷的灰色格線誤判為 A, B, C。
-               - 若你無法確定是不是字，只要它不像連續的筆畫，就判定為空白。
-            3. **字母結構保護**：
-               - 'A'：必須有交會頂點與橫線。若只有斜線無橫線，極可能是噪音或誤判，請謹慎。
-               - 'C'：必須有明顯右側開口。
-            4. **禁止位移**：確保 JSON 中的 q_idx 與影像中的印刷題號完全一一對應。
+            【辨識準則：嚴格對位與去噪】
+            1. **禁止位移**：每一題必須以印刷題號(如 1., 2., 11., 12.)為基準，讀取其正下方的字母。
+            2. **空白鎖定**：若該題號下方的格子內完全無手寫墨跡，必須回傳空字串 ""。不可因為前後題有答案就自行位移遞補。
+            3. **A/C 判定精確化**：
+               - 'A'：頂部匯合且中間有橫槓。
+               - 'C'：右側大開口弧線，絕對沒有橫槓。
+            4. **噪音排除**：忽略格線與掃描產生的細碎雜點。
 
-            嚴格回傳 JSON 格式：
+            任務：辨識班級、座號、姓名，並比對正確答案。
+            嚴格回傳 JSON：
             [ {{"class": "班級", "no": "座號", "name": "姓名", "questions": [{{"q_idx": 1, "s_ans": "A", "c_ans": "A", "res": "○"}}] }} ]
             """
             
-            self.status_var.set("AI 進行精準座標辨識中...")
+            self.status_var.set("AI 辨識中...")
             response = model.generate_content([prompt, uploaded_file])
             self.results_data = json.loads(response.text)
 
@@ -138,10 +156,10 @@ class AutoGraderCloud(ctk.CTk):
                 s['correct_sum'] = correct_count
                 self.tree.insert("", "end", values=(s.get('class'), s.get('no'), s.get('name'), correct_count))
                 
-            self.status_var.set("批改完成！已校正位移與空白誤判。")
+            self.status_var.set(f"批改完成！(模型: {target_model})")
             self.btn_export.configure(state="normal")
         except Exception as e:
-            messagebox.showerror("錯誤", f"辨識失敗: {str(e)}")
+            messagebox.showerror("錯誤", f"辨識失敗：\n{str(e)}")
         finally:
             self.btn_start.configure(state="normal")
 
@@ -175,7 +193,7 @@ class AutoGraderCloud(ctk.CTk):
                 pd.DataFrame(export_dict).to_excel(writer, sheet_name='學生作答成績', index=False)
                 pd.DataFrame(ans_dict).to_excel(writer, sheet_name='正確解答', index=False)
 
-            messagebox.showinfo("成功", "分頁報告匯出成功！")
+            messagebox.showinfo("成功", "報告匯出成功！")
         except Exception as e:
             messagebox.showerror("匯出錯誤", str(e))
 
