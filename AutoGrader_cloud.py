@@ -13,23 +13,19 @@ import io
 class AutoGraderCloud(ctk.CTk):
     def __init__(self):
         super().__init__()
-        self.title("AI 雲端閱卷系統 v8.9 - 自動模型抓取版")
+        self.title("AI 雲端閱卷系統 v9.0 - 容錯校正與筆跡增益版")
         self.geometry("1100x850")
-        
         self.answer_text = "" 
         self.results_data = [] 
         self.config_file = "api_key.txt"
-        
         self.setup_ui()
         self.load_api_key_from_file()
 
     def setup_ui(self):
         ctk.set_appearance_mode("System")
         ctk.set_default_color_theme("blue")
-        
-        ctk.CTkLabel(self, text="AI 閱卷系統 - 自動模型與座標校正模式", font=("Microsoft JhengHei", 24, "bold")).pack(pady=15)
+        ctk.CTkLabel(self, text="AI 閱卷系統 - 最終容錯辨識模式", font=("Microsoft JhengHei", 24, "bold")).pack(pady=15)
 
-        # 1. API 配置
         config_frame = ctk.CTkFrame(self)
         config_frame.pack(pady=10, padx=20, fill="x")
         ctk.CTkLabel(config_frame, text="API Key:").grid(row=0, column=0, padx=10, pady=5)
@@ -37,7 +33,6 @@ class AutoGraderCloud(ctk.CTk):
         self.api_entry.grid(row=0, column=1, padx=10, pady=5)
         ctk.CTkButton(config_frame, text="儲存 Key", width=100, command=self.save_api_key).grid(row=0, column=2, padx=10)
 
-        # 2. 功能按鈕
         btn_frame = ctk.CTkFrame(self)
         btn_frame.pack(pady=10, padx=20, fill="x")
         ctk.CTkButton(btn_frame, text="1. 載入解答 (Word/PDF)", command=self.load_answer, width=200).grid(row=0, column=0, padx=15, pady=10)
@@ -46,7 +41,6 @@ class AutoGraderCloud(ctk.CTk):
         self.btn_export = ctk.CTkButton(btn_frame, text="3. 匯出分頁 Excel", command=self.export_excel, state="disabled", width=180)
         self.btn_export.grid(row=0, column=2, padx=15, pady=10)
 
-        # 3. 數據表格
         table_frame = ctk.CTkFrame(self)
         table_frame.pack(pady=10, padx=20, fill="both", expand=True)
         self.tree = ttk.Treeview(table_frame, columns=("Class", "No", "Name", "CorrectCount"), show='headings')
@@ -78,9 +72,9 @@ class AutoGraderCloud(ctk.CTk):
                 doc = fitz.open(path)
                 self.answer_text = "".join([page.get_text() for page in doc])
                 doc.close()
-            self.status_var.set("解答載入完成")
+            self.status_var.set("解答載入成功")
         except Exception as e:
-            messagebox.showerror("錯誤", f"解答讀取失敗: {str(e)}")
+            messagebox.showerror("錯誤", f"讀取失敗: {str(e)}")
 
     def start_grading(self):
         api_key = self.api_entry.get().strip()
@@ -95,59 +89,40 @@ class AutoGraderCloud(ctk.CTk):
 
     def run_grading(self, pdf_path, api_key):
         try:
-            self.status_var.set("正在搜尋 API 可用模型清單...")
+            self.status_var.set("自動偵測可用模型...")
             genai.configure(api_key=api_key)
-            
-            # --- 自動模型抓取邏輯 ---
-            available_models = []
-            for m in genai.list_models():
-                if 'generateContent' in m.supported_generation_methods:
-                    available_models.append(m.name)
-            
-            # 優先級：flash -> pro -> 列表第一個
-            target_model = None
-            for name in available_models:
-                if "gemini-1.5-flash" in name:
-                    target_model = name
-                    break
-            if not target_model:
-                for name in available_models:
-                    if "gemini-1.5-pro" in name:
-                        target_model = name
-                        break
-            if not target_model and available_models:
-                target_model = available_models[0]
-            
-            if not target_model:
-                raise Exception("此 API Key 無可用模型。")
+            # 自動抓取可用的 flash 模型
+            models = [m.name for m in genai.list_models() if 'generateContent' in m.supported_generation_methods]
+            target_model = next((m for m in models if "1.5-flash" in m), models[0] if models else "models/gemini-1.5-flash")
 
             model = genai.GenerativeModel(model_name=target_model, generation_config={"response_mime_type": "application/json"})
-            
-            self.status_var.set(f"上傳中 (使用模型: {target_model})...")
             uploaded_file = genai.upload_file(path=pdf_path)
             while uploaded_file.state.name == "PROCESSING": 
                 time.sleep(2)
                 uploaded_file = genai.get_file(uploaded_file.name)
             
-            # --- 強化版 Prompt：解決位移、誤判、與空白問題 ---
+            # --- v9.0 容錯核心 Prompt ---
             prompt = f"""
             你是一位視覺閱卷專家。影像中是學生的手寫答案卷。
-            參考解答：{self.answer_text}
+            參考解答清單：{self.answer_text}
 
-            【辨識準則：嚴格對位與去噪】
-            1. **禁止位移**：每一題必須以印刷題號(如 1., 2., 11., 12.)為基準，讀取其正下方的字母。
-            2. **空白鎖定**：若該題號下方的格子內完全無手寫墨跡，必須回傳空字串 ""。不可因為前後題有答案就自行位移遞補。
-            3. **A/C 判定精確化**：
-               - 'A'：頂部匯合且中間有橫槓。
-               - 'C'：右側大開口弧線，絕對沒有橫槓。
-            4. **噪音排除**：忽略格線與掃描產生的細碎雜點。
+            【辨識強化指令：不漏抓、不位移】
+            1. **容錯對位**：以印刷題號為中心，搜尋其鄰近格內的筆劃。即使影像稍微傾斜或題號沒對齊格子，也請找出對應的答案。
+            2. **筆跡增益保護 (解決空白誤判)**：
+               - 格子內無論是藍色、黑色或淺灰色墨跡，只要有「人為書寫軌跡」，絕對不准判定為空白。
+               - 即使筆劃極淡或斷裂，也請根據輪廓嘗試判定為 A, B, C 或 D。
+               - 只有在該區域「完全純白」且無任何墨跡時，才可回傳 ""。
+            3. **特徵優先**：
+               - 'A'：頂部尖或圓，中間有橫線（若橫線極淡也算 A）。
+               - 'C'：左側圓弧，右側明顯開口。
+            4. **禁止位移遞補**：每一題號 (q_idx) 必須與影像中的題號標籤嚴格對應。
 
-            任務：辨識班級、座號、姓名，並比對正確答案。
-            嚴格回傳 JSON：
+            任務：辨識班級、座號、姓名，並逐題比對。
+            回傳 JSON：
             [ {{"class": "班級", "no": "座號", "name": "姓名", "questions": [{{"q_idx": 1, "s_ans": "A", "c_ans": "A", "res": "○"}}] }} ]
             """
             
-            self.status_var.set("AI 辨識中...")
+            self.status_var.set("AI 深度容錯辨識中...")
             response = model.generate_content([prompt, uploaded_file])
             self.results_data = json.loads(response.text)
 
@@ -156,10 +131,10 @@ class AutoGraderCloud(ctk.CTk):
                 s['correct_sum'] = correct_count
                 self.tree.insert("", "end", values=(s.get('class'), s.get('no'), s.get('name'), correct_count))
                 
-            self.status_var.set(f"批改完成！(模型: {target_model})")
+            self.status_var.set(f"批改完成！已使用模型: {target_model}")
             self.btn_export.configure(state="normal")
         except Exception as e:
-            messagebox.showerror("錯誤", f"辨識失敗：\n{str(e)}")
+            messagebox.showerror("錯誤", f"辨識失敗: {str(e)}")
         finally:
             self.btn_start.configure(state="normal")
 
@@ -167,7 +142,7 @@ class AutoGraderCloud(ctk.CTk):
         path = filedialog.asksaveasfilename(defaultextension=".xlsx", filetypes=[("Excel", "*.xlsx")])
         if not path: return
         try:
-            # 學生作答分頁
+            # 學生作答成績分頁
             export_dict = {"項目": ["班級", "座號", "姓名", "正確總題數"]}
             max_q = max([len(s.get("questions", [])) for s in self.results_data]) if self.results_data else 0
             for i in range(1, max_q + 1):
@@ -183,17 +158,17 @@ class AutoGraderCloud(ctk.CTk):
                 export_dict[col_name] = vals
 
             # 正確解答分頁
-            ans_dict = {"題號": [], "標準解答": []}
+            ans_dict = {"題號": [], "正確解答": []}
             if self.results_data:
                 for q in self.results_data[0].get("questions", []):
                     ans_dict["題號"].append(f"第{q.get('q_idx')}題")
-                    ans_dict["標準解答"].append(q.get("c_ans"))
+                    ans_dict["正確解答"].append(q.get("c_ans"))
 
             with pd.ExcelWriter(path, engine='openpyxl') as writer:
                 pd.DataFrame(export_dict).to_excel(writer, sheet_name='學生作答成績', index=False)
                 pd.DataFrame(ans_dict).to_excel(writer, sheet_name='正確解答', index=False)
 
-            messagebox.showinfo("成功", "報告匯出成功！")
+            messagebox.showinfo("成功", "分頁報告匯出成功！")
         except Exception as e:
             messagebox.showerror("匯出錯誤", str(e))
 
