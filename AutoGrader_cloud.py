@@ -13,7 +13,7 @@ import io
 class AutoGraderCloud(ctk.CTk):
     def __init__(self):
         super().__init__()
-        self.title("AI 雲端閱卷系統 v9.1 - 筆跡極致增益版")
+        self.title("AI 雲端閱卷系統 v9.2 - 局部對焦與細節增益版")
         self.geometry("1100x850")
         self.answer_text = "" 
         self.results_data = [] 
@@ -24,7 +24,7 @@ class AutoGraderCloud(ctk.CTk):
     def setup_ui(self):
         ctk.set_appearance_mode("System")
         ctk.set_default_color_theme("blue")
-        ctk.CTkLabel(self, text="AI 閱卷系統 - 筆跡增益與結構容錯模式", font=("Microsoft JhengHei", 24, "bold")).pack(pady=15)
+        ctk.CTkLabel(self, text="AI 閱卷系統 - 局部放大對焦模式", font=("Microsoft JhengHei", 24, "bold")).pack(pady=15)
 
         config_frame = ctk.CTkFrame(self)
         config_frame.pack(pady=10, padx=20, fill="x")
@@ -89,7 +89,7 @@ class AutoGraderCloud(ctk.CTk):
 
     def run_grading(self, pdf_path, api_key):
         try:
-            self.status_var.set("正在搜尋 API 可用模型清單...")
+            self.status_var.set("自動偵測可用模型...")
             genai.configure(api_key=api_key)
             models = [m.name for m in genai.list_models() if 'generateContent' in m.supported_generation_methods]
             target_model = next((m for m in models if "1.5-flash" in m), models[0] if models else "models/gemini-1.5-flash")
@@ -100,26 +100,27 @@ class AutoGraderCloud(ctk.CTk):
                 time.sleep(2)
                 uploaded_file = genai.get_file(uploaded_file.name)
             
-            # --- v9.1 針對第 10, 12, 15 題優化之 Prompt ---
+            # --- v9.2 最終優化 Prompt：模擬手動讀取的「高清對焦」邏輯 ---
             prompt = f"""
-            你是一位極其細心的視覺閱卷專家。
+            你是一位擁有「鷹眼」的高精準閱卷專家。
             參考解答清單：{self.answer_text}
 
-            【辨識強化指令：筆跡優先鑑定】
-            1. **鑑定極淡筆跡 (重要)**：
-               - 部分學生的筆跡非常輕（如影像中的第 10、12、15 題），即便線條是極淺的灰色且幾乎與背景融合，只要它具有「人為書寫的軌跡結構」，絕對禁止判定為空白。
-            2. **結構還原與容錯**：
-               - **A (第 12 題優化)**：即便中間橫槓極淡或消失，只要整體呈現倒 V 型結構且位於題號下方，應判定為 A。
-               - **B (第 10 題優化)**：即便左側直線不完全或墨跡極淡，只要有「雙層閉合結構」趨勢，應判定為 B。
-               - **C (第 15 題優化)**：即便只有一條微弱的圓弧曲線，只要右側有開口特徵，應判定為 C。
-            3. **嚴禁位移**：確保 q_idx (題號) 與影像中的印刷編號 1-15 嚴格對位。
-            4. **噪音排除**：僅在格子內完全沒有任何「人為運動軌跡」墨跡時才回傳 ""。
+            【任務關鍵：局部對焦與細節增益】
+            1. **深度掃描**：雖然這是一個 PDF，但請你在辨識時將每一格「局部放大」觀察。
+            2. **修正 A/B/C 的斷裂筆觸 (針對第 10, 12, 15 題)**：
+               - **鑑定 A**：即便中間橫槓淡到看不見，只要有「頂部交會的倒 V 形」，必判定為 A。
+               - **鑑定 B**：即便左側直線沒寫，只要有「上下重疊的弧線」趨勢，必判定為 B。
+               - **鑑定 C**：即便筆劃像淺灰色陰影，只要右側有明顯開口，必判定為 C。
+            3. **禁止將弱筆跡視為空白**：除非該格子完全像白紙一樣乾淨，否則只要有一絲灰度、人為運動軌跡，就必須嘗試辨識出字母。
+            4. **嚴格對位校準**：
+               - 以印刷題號標籤 (1., 2., ... 15.) 為中心對焦點。
+               - 絕對禁止發生「ABCAC 變成 BCACA」的位移遞補行為。如果第一題看不清，請標註 "" 但不准移動後面的題號。
 
-            任務：辨識班級、座號、姓名，並回傳 JSON 格式。
+            回傳 JSON：
             [ {{"class": "班級", "no": "座號", "name": "姓名", "questions": [{{"q_idx": 1, "s_ans": "A", "c_ans": "A", "res": "○"}}] }} ]
             """
             
-            self.status_var.set("AI 進行高增益辨識中...")
+            self.status_var.set("AI 局部對焦辨識中...")
             response = model.generate_content([prompt, uploaded_file])
             self.results_data = json.loads(response.text)
 
@@ -128,10 +129,10 @@ class AutoGraderCloud(ctk.CTk):
                 s['correct_sum'] = correct_count
                 self.tree.insert("", "end", values=(s.get('class'), s.get('no'), s.get('name'), correct_count))
                 
-            self.status_var.set(f"批改完成！(已修正第 10, 12, 15 題誤判)")
+            self.status_var.set(f"批改完成！(已校正細節損耗問題)")
             self.btn_export.configure(state="normal")
         except Exception as e:
-            messagebox.showerror("錯誤", f"辨識過程出錯: {str(e)}")
+            messagebox.showerror("錯誤", f"辨識失敗: {str(e)}")
         finally:
             self.btn_start.configure(state="normal")
 
@@ -139,6 +140,7 @@ class AutoGraderCloud(ctk.CTk):
         path = filedialog.asksaveasfilename(defaultextension=".xlsx", filetypes=[("Excel", "*.xlsx")])
         if not path: return
         try:
+            # 學生作答成績分頁
             export_dict = {"項目": ["班級", "座號", "姓名", "正確總題數"]}
             max_q = max([len(s.get("questions", [])) for s in self.results_data]) if self.results_data else 0
             for i in range(1, max_q + 1):
@@ -153,6 +155,7 @@ class AutoGraderCloud(ctk.CTk):
                 while len(vals) < len(export_dict["項目"]): vals.append("")
                 export_dict[col_name] = vals
 
+            # 正確解答分頁
             ans_dict = {"題號": [], "標準解答": []}
             if self.results_data:
                 for q in self.results_data[0].get("questions", []):
@@ -163,7 +166,7 @@ class AutoGraderCloud(ctk.CTk):
                 pd.DataFrame(export_dict).to_excel(writer, sheet_name='學生作答成績', index=False)
                 pd.DataFrame(ans_dict).to_excel(writer, sheet_name='正確解答', index=False)
 
-            messagebox.showinfo("成功", "報告已成功匯出！")
+            messagebox.showinfo("成功", "Excel 報告匯出成功！")
         except Exception as e:
             messagebox.showerror("匯出錯誤", str(e))
 
