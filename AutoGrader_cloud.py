@@ -2,6 +2,7 @@ import customtkinter as ctk
 from tkinter import filedialog, messagebox, ttk
 from docx import Document
 import fitz  # PyMuPDF
+from PIL import Image, ImageEnhance  # 新增 Pillow 用於影像預處理
 import google.generativeai as genai
 import pandas as pd
 import os
@@ -13,7 +14,7 @@ import io
 class AutoGraderCloud(ctk.CTk):
     def __init__(self):
         super().__init__()
-        self.title("AI 雲端閱卷系統 v9.3 - 物理網格鎖定版")
+        self.title("AI 雲端閱卷系統 v9.4 - 高清增強與噪點排除版")
         self.geometry("1100x850")
         self.answer_text = "" 
         self.results_data = [] 
@@ -24,7 +25,7 @@ class AutoGraderCloud(ctk.CTk):
     def setup_ui(self):
         ctk.set_appearance_mode("System")
         ctk.set_default_color_theme("blue")
-        ctk.CTkLabel(self, text="AI 閱卷系統 - 物理網格鎖定模式 (v9.3)", font=("Microsoft JhengHei", 24, "bold")).pack(pady=15)
+        ctk.CTkLabel(self, text="AI 閱卷系統 - 高清影像與自動增強模式 (v9.4)", font=("Microsoft JhengHei", 24, "bold")).pack(pady=15)
 
         config_frame = ctk.CTkFrame(self)
         config_frame.pack(pady=10, padx=20, fill="x")
@@ -36,7 +37,7 @@ class AutoGraderCloud(ctk.CTk):
         btn_frame = ctk.CTkFrame(self)
         btn_frame.pack(pady=10, padx=20, fill="x")
         ctk.CTkButton(btn_frame, text="1. 載入解答 (Word/PDF)", command=self.load_answer, width=200).grid(row=0, column=0, padx=15, pady=10)
-        self.btn_start = ctk.CTkButton(btn_frame, text="2. 開始批改 (PDF/JPG)", command=self.start_grading, fg_color="#2ecc71", width=180)
+        self.btn_start = ctk.CTkButton(btn_frame, text="2. 開始批改 (高清 PDF/JPG)", command=self.start_grading, fg_color="#2ecc71", width=180)
         self.btn_start.grid(row=0, column=1, padx=15, pady=10)
         self.btn_export = ctk.CTkButton(btn_frame, text="3. 匯出分頁 Excel", command=self.export_excel, state="disabled", width=180)
         self.btn_export.grid(row=0, column=2, padx=15, pady=10)
@@ -89,43 +90,76 @@ class AutoGraderCloud(ctk.CTk):
 
     def run_grading(self, file_path, api_key):
         try:
-            self.status_var.set("系統初始化中...")
+            self.status_var.set("系統高清初始化中...")
             genai.configure(api_key=api_key)
             # 自動偵測模型，避免 404 錯誤
             models = [m.name for m in genai.list_models() if 'generateContent' in m.supported_generation_methods]
             target_model = next((m for m in models if "1.5-flash" in m), models[0] if models else "models/gemini-1.5-flash")
 
             model = genai.GenerativeModel(model_name=target_model, generation_config={"response_mime_type": "application/json"})
-            uploaded_file = genai.upload_file(path=file_path)
-            while uploaded_file.state.name == "PROCESSING": 
-                time.sleep(2)
-                uploaded_file = genai.get_file(uploaded_file.name)
             
-            # --- v9.3 核心對位 Prompt ---
+            # --- v9.4 PDF 高清無損渲染與增強對比預處理 ---
+            processed_images = []
+            if file_path.lower().endswith('.pdf'):
+                doc = fitz.open(file_path)
+                for page in doc:
+                    # 強制 300 DPI 無損渲染，對焦細節
+                    pix = page.get_pixmap(matrix=fitz.Matrix(300/72, 300/72))
+                    img_data = pix.tobytes("ppm")
+                    pil_img = Image.open(io.BytesIO(img_data))
+                    
+                    # 動態對比度增強 2.0x (修正淡色筆跡問題)
+                    enhancer = ImageEnhance.Contrast(pil_img)
+                    pil_img = enhancer.enhance(2.0)
+                    
+                    # 轉為 JPEG bytes 以便上傳
+                    img_byte_arr = io.BytesIO()
+                    pil_img.save(img_byte_arr, format='JPEG')
+                    img_byte_arr = img_byte_arr.getvalue()
+                    processed_images.append({'data': img_byte_arr, 'mime_type': 'image/jpeg'})
+                doc.close()
+            else:
+                # JPG/PNG 直接增強對比度
+                pil_img = Image.open(file_path)
+                enhancer = ImageEnhance.Contrast(pil_img)
+                pil_img = enhancer.enhance(2.0)
+                img_byte_arr = io.BytesIO()
+                pil_img.save(img_byte_arr, format='JPEG')
+                img_byte_arr = img_byte_arr.getvalue()
+                processed_images.append({'data': img_byte_arr, 'mime_type': 'image/jpeg'})
+
+            # --- 上傳並辨識 ---
+            grading_payload = []
+            for img in processed_images:
+                # 使用 Inline data 上傳（適合單頁高清圖）
+                grading_payload.append(genai.upload_file(content=img['data'], mime_type=img['mime_type']))
+
+            # 確保上傳完成
+            for uploaded_file in grading_payload:
+                while uploaded_file.state.name == "PROCESSING": 
+                    time.sleep(2)
+                    uploaded_file = genai.get_file(uploaded_file.name)
+            
+            # --- v9.4 噪點排除 Prompt ---
             prompt = f"""
-            你是一位視覺辨識與對位極其精準的閱卷專家。
+            你是一位視覺對位極其精準的閱卷專家。
             參考解答清單：{self.answer_text}
 
-            【任務：絕對物理區域鎖定辨識】
-            1. **建立 3x5 網格鎖定 (Grid-Lock)**：
-               - 請先找到影像中「聽力作答區」的 3x5 黑色格框。
-               - **嚴格限區辨識**：
-                 - 第一排（題號 1-5）：辨識第 5 題時，筆跡即便偏向右上角，只要在第 5 格內，必判定為 C。
-                 - 第二排（題號 6-10）：辨識第 8-10 題時，中心點必須垂直鎖定在該格框內。嚴禁向上讀取到第 3-5 題的答案。
-                 - 第三排（題號 11-15）：確保第 14 題(B)與第 15 題(A)不發生水平位移或順序顛倒。
-            2. **消除跨行干擾**：
-               - 絕對禁止將上方格子的筆跡視為下方題目的答案。每一格必須獨立判斷。
-            3. **細微筆跡增益保護**：
-               - 針對藍色或黑色細筆跡，只要格子內有「人為書寫軌跡」，絕對禁止判定為空白。
-            4. **禁止自動遞補**：
-               - 若某格確實無內容，回傳 ""，但後續題號不可因此位移。
+            【任務：無損高清辨識與噪點排除】
+            1. **高清無損辨識**：此影像已進行高清增強。請你局部放大觀察每一格。
+            2. **消除噪點干擾 (針對第 7-10 題與空白問題)**：
+               - **物理格框鎖定**：請嚴格鎖定 3x5 黑色格框邊界。
+               - **鄰域排他性**：在辨識第 8 題(C)時，嚴禁讀取格框外部（上方題目文字、格線、或掃描污點噪點）的任何墨跡。
+               - **第 5 題專項**：即便筆跡偏向角落，只要在第 5 格內有軌跡，判定為 C。
+            3. **細節增益**：針對淡色或斷裂筆跡，只要格子內有「人為書寫軌跡」，絕對禁止判定為空白。
+            4. **禁止位移**：確保 JSON 中的 q_idx 與影像標籤嚴格一致。
 
             回傳 JSON：
             [ {{"class": "班級", "no": "座號", "name": "姓名", "questions": [{{"q_idx": 1, "s_ans": "A", "c_ans": "A", "res": "○"}}] }} ]
             """
             
-            self.status_var.set("AI 網格鎖定辨識中...")
-            response = model.generate_content([prompt, uploaded_file])
+            self.status_var.set("AI 噪點排除辨識中...")
+            response = model.generate_content([prompt] + grading_payload)
             self.results_data = json.loads(response.text)
 
             for s in self.results_data:
@@ -133,7 +167,7 @@ class AutoGraderCloud(ctk.CTk):
                 s['correct_sum'] = correct_count
                 self.tree.insert("", "end", values=(s.get('class'), s.get('no'), s.get('name'), correct_count))
                 
-            self.status_var.set(f"批改完成！(已修正位移與漏判)")
+            self.status_var.set(f"批改完成！(已修正位移、淡色與空白漏判)")
             self.btn_export.configure(state="normal")
         except Exception as e:
             messagebox.showerror("錯誤", f"辨識失敗: {str(e)}")
@@ -168,7 +202,7 @@ class AutoGraderCloud(ctk.CTk):
                 pd.DataFrame(export_dict).to_excel(writer, sheet_name='學生作答成績', index=False)
                 pd.DataFrame(ans_dict).to_excel(writer, sheet_name='正確解答', index=False)
 
-            messagebox.showinfo("成功", "報告已成功匯出至 Excel 分頁！")
+            messagebox.showinfo("成功", "高清報告匯出成功！")
         except Exception as e:
             messagebox.showerror("匯出錯誤", str(e))
 
