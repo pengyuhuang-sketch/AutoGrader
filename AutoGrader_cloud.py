@@ -13,7 +13,7 @@ import io
 class AutoGraderCloud(ctk.CTk):
     def __init__(self):
         super().__init__()
-        self.title("AI 雲端閱卷系統 v9.2 - 局部對焦與細節增益版")
+        self.title("AI 雲端閱卷系統 v9.3 - 物理網格鎖定版")
         self.geometry("1100x850")
         self.answer_text = "" 
         self.results_data = [] 
@@ -24,7 +24,7 @@ class AutoGraderCloud(ctk.CTk):
     def setup_ui(self):
         ctk.set_appearance_mode("System")
         ctk.set_default_color_theme("blue")
-        ctk.CTkLabel(self, text="AI 閱卷系統 - 局部放大對焦模式", font=("Microsoft JhengHei", 24, "bold")).pack(pady=15)
+        ctk.CTkLabel(self, text="AI 閱卷系統 - 物理網格鎖定模式 (v9.3)", font=("Microsoft JhengHei", 24, "bold")).pack(pady=15)
 
         config_frame = ctk.CTkFrame(self)
         config_frame.pack(pady=10, padx=20, fill="x")
@@ -36,7 +36,7 @@ class AutoGraderCloud(ctk.CTk):
         btn_frame = ctk.CTkFrame(self)
         btn_frame.pack(pady=10, padx=20, fill="x")
         ctk.CTkButton(btn_frame, text="1. 載入解答 (Word/PDF)", command=self.load_answer, width=200).grid(row=0, column=0, padx=15, pady=10)
-        self.btn_start = ctk.CTkButton(btn_frame, text="2. 開始批改 (PDF考卷)", command=self.start_grading, fg_color="#2ecc71", width=180)
+        self.btn_start = ctk.CTkButton(btn_frame, text="2. 開始批改 (PDF/JPG)", command=self.start_grading, fg_color="#2ecc71", width=180)
         self.btn_start.grid(row=0, column=1, padx=15, pady=10)
         self.btn_export = ctk.CTkButton(btn_frame, text="3. 匯出分頁 Excel", command=self.export_excel, state="disabled", width=180)
         self.btn_export.grid(row=0, column=2, padx=15, pady=10)
@@ -78,49 +78,53 @@ class AutoGraderCloud(ctk.CTk):
 
     def start_grading(self):
         api_key = self.api_entry.get().strip()
-        pdf_path = filedialog.askopenfilename(filetypes=[("PDF", "*.pdf")])
-        if pdf_path and api_key:
+        file_path = filedialog.askopenfilename(filetypes=[("PDF/Image", "*.pdf *.jpg *.png")])
+        if file_path and api_key:
             if not self.answer_text:
                 messagebox.showwarning("提示", "請先載入正確解答")
                 return
             for item in self.tree.get_children(): self.tree.delete(item)
             self.results_data = []
-            threading.Thread(target=self.run_grading, args=(pdf_path, api_key), daemon=True).start()
+            threading.Thread(target=self.run_grading, args=(file_path, api_key), daemon=True).start()
 
-    def run_grading(self, pdf_path, api_key):
+    def run_grading(self, file_path, api_key):
         try:
-            self.status_var.set("自動偵測可用模型...")
+            self.status_var.set("系統初始化中...")
             genai.configure(api_key=api_key)
+            # 自動偵測模型，避免 404 錯誤
             models = [m.name for m in genai.list_models() if 'generateContent' in m.supported_generation_methods]
             target_model = next((m for m in models if "1.5-flash" in m), models[0] if models else "models/gemini-1.5-flash")
 
             model = genai.GenerativeModel(model_name=target_model, generation_config={"response_mime_type": "application/json"})
-            uploaded_file = genai.upload_file(path=pdf_path)
+            uploaded_file = genai.upload_file(path=file_path)
             while uploaded_file.state.name == "PROCESSING": 
                 time.sleep(2)
                 uploaded_file = genai.get_file(uploaded_file.name)
             
-            # --- v9.2 最終優化 Prompt：模擬手動讀取的「高清對焦」邏輯 ---
+            # --- v9.3 核心對位 Prompt ---
             prompt = f"""
-            你是一位擁有「鷹眼」的高精準閱卷專家。
+            你是一位視覺辨識與對位極其精準的閱卷專家。
             參考解答清單：{self.answer_text}
 
-            【任務關鍵：局部對焦與細節增益】
-            1. **深度掃描**：雖然這是一個 PDF，但請你在辨識時將每一格「局部放大」觀察。
-            2. **修正 A/B/C 的斷裂筆觸 (針對第 10, 12, 15 題)**：
-               - **鑑定 A**：即便中間橫槓淡到看不見，只要有「頂部交會的倒 V 形」，必判定為 A。
-               - **鑑定 B**：即便左側直線沒寫，只要有「上下重疊的弧線」趨勢，必判定為 B。
-               - **鑑定 C**：即便筆劃像淺灰色陰影，只要右側有明顯開口，必判定為 C。
-            3. **禁止將弱筆跡視為空白**：除非該格子完全像白紙一樣乾淨，否則只要有一絲灰度、人為運動軌跡，就必須嘗試辨識出字母。
-            4. **嚴格對位校準**：
-               - 以印刷題號標籤 (1., 2., ... 15.) 為中心對焦點。
-               - 絕對禁止發生「ABCAC 變成 BCACA」的位移遞補行為。如果第一題看不清，請標註 "" 但不准移動後面的題號。
+            【任務：絕對物理區域鎖定辨識】
+            1. **建立 3x5 網格鎖定 (Grid-Lock)**：
+               - 請先找到影像中「聽力作答區」的 3x5 黑色格框。
+               - **嚴格限區辨識**：
+                 - 第一排（題號 1-5）：辨識第 5 題時，筆跡即便偏向右上角，只要在第 5 格內，必判定為 C。
+                 - 第二排（題號 6-10）：辨識第 8-10 題時，中心點必須垂直鎖定在該格框內。嚴禁向上讀取到第 3-5 題的答案。
+                 - 第三排（題號 11-15）：確保第 14 題(B)與第 15 題(A)不發生水平位移或順序顛倒。
+            2. **消除跨行干擾**：
+               - 絕對禁止將上方格子的筆跡視為下方題目的答案。每一格必須獨立判斷。
+            3. **細微筆跡增益保護**：
+               - 針對藍色或黑色細筆跡，只要格子內有「人為書寫軌跡」，絕對禁止判定為空白。
+            4. **禁止自動遞補**：
+               - 若某格確實無內容，回傳 ""，但後續題號不可因此位移。
 
             回傳 JSON：
             [ {{"class": "班級", "no": "座號", "name": "姓名", "questions": [{{"q_idx": 1, "s_ans": "A", "c_ans": "A", "res": "○"}}] }} ]
             """
             
-            self.status_var.set("AI 局部對焦辨識中...")
+            self.status_var.set("AI 網格鎖定辨識中...")
             response = model.generate_content([prompt, uploaded_file])
             self.results_data = json.loads(response.text)
 
@@ -129,7 +133,7 @@ class AutoGraderCloud(ctk.CTk):
                 s['correct_sum'] = correct_count
                 self.tree.insert("", "end", values=(s.get('class'), s.get('no'), s.get('name'), correct_count))
                 
-            self.status_var.set(f"批改完成！(已校正細節損耗問題)")
+            self.status_var.set(f"批改完成！(已修正位移與漏判)")
             self.btn_export.configure(state="normal")
         except Exception as e:
             messagebox.showerror("錯誤", f"辨識失敗: {str(e)}")
@@ -140,7 +144,6 @@ class AutoGraderCloud(ctk.CTk):
         path = filedialog.asksaveasfilename(defaultextension=".xlsx", filetypes=[("Excel", "*.xlsx")])
         if not path: return
         try:
-            # 學生作答成績分頁
             export_dict = {"項目": ["班級", "座號", "姓名", "正確總題數"]}
             max_q = max([len(s.get("questions", [])) for s in self.results_data]) if self.results_data else 0
             for i in range(1, max_q + 1):
@@ -155,7 +158,6 @@ class AutoGraderCloud(ctk.CTk):
                 while len(vals) < len(export_dict["項目"]): vals.append("")
                 export_dict[col_name] = vals
 
-            # 正確解答分頁
             ans_dict = {"題號": [], "標準解答": []}
             if self.results_data:
                 for q in self.results_data[0].get("questions", []):
@@ -166,7 +168,7 @@ class AutoGraderCloud(ctk.CTk):
                 pd.DataFrame(export_dict).to_excel(writer, sheet_name='學生作答成績', index=False)
                 pd.DataFrame(ans_dict).to_excel(writer, sheet_name='正確解答', index=False)
 
-            messagebox.showinfo("成功", "Excel 報告匯出成功！")
+            messagebox.showinfo("成功", "報告已成功匯出至 Excel 分頁！")
         except Exception as e:
             messagebox.showerror("匯出錯誤", str(e))
 
